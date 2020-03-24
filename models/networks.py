@@ -909,5 +909,109 @@ class MutUnetGenerator(nn.Module):
         return (first_img,second_img,third_img)
 
 
+class MutDiscriminatorV2(nn.Module):
+    """an dynatic discriminator"""
+    def __init__(self,input_nc,ndf=64,n_layers=3,norm_layer=nn.BatchNorm2d):
+        """
+
+        :param input_nc: the number of channels input images
+        :param ndf: the number of filters in the last conv layer
+        :param n_layers: the number of conv layers in the discriminator
+        :param norm_layer: normalization layer
+        """
+        super(MutDiscriminatorV2,self).__init__()
+        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        kw = 4
+        padw = 1
+        nf_mult = 1
+        nf_mult_prev = 1
+        self.n_layers = n_layers
+
+        last_nc = input_nc
+
+        for i in range(n_layers):
+            model = [
+                nn.Conv2d(last_nc,nf_mult * ndf,kernel_size=kw,stride=2,padding=padw,bias=use_bias),
+                norm_layer(nf_mult * ndf),
+                nn.LeakyReLU(0.2,True)
+            ]
+            setattr(self,str(i) + '_layers',nn.Sequential(*model))
+            discrimator = [
+                nn.Conv2d(nf_mult * ndf,kernel_size=1,stride=1,padding=0),
+                nn.Tanh()
+            ]
+            setattr(self,str(i) + '_discrimator',nn.Sequential(*discrimator))
+            last_nc = nf_mult * ndf
+            nf_mult = nf_mult << 1
+
+        self.last_block = MutDiscriminatorsLastBlock(last_nc,norm_layer)
+
+    def forward(self, input):
+        result = []
+        for i in range(self.n_layers):
+            model = getattr(self,str(i) + '_layers')
+            discrimator = getattr(self,str(i) + '_discrimator')
+
+            input = model(input)
+            tmp = discrimator(input)
+
+            result.append(tmp)
+
+        last_tmp,classifier = self.last_block(input)
+        result.extend([last_tmp,classifier])
+        return result
+
+
+
+
+
+class MutDiscriminatorsLastBlock(nn.Module):
+    def __init__(self,input_nc,norm_layer,ndf=512):
+        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+        kw = 4
+        padw = 1
+        sequence = [
+            nn.Conv2d(input_nc,ndf,kernel_size=kw,stride=1,padding=padw,bias=use_bias),
+            norm_layer(ndf),
+            nn.LeakyReLU(0.2,True)
+        ]
+        self.block = nn.Sequential(*sequence)
+
+        sequence = [nn.Conv2d(ndf,1,kernel_size=kw,stride=1,padding=padw)]
+        self.discrimator = nn.Sequential(*sequence)
+
+        classifier_list = [
+            nn.Conv2d(ndf,ndf // 2,kernel_size=kw,stride=1,padding=padw),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(ndf // 2, ndf // 4, kernel_size=4, stride=2, padding=padw),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(ndf // 4, ndf // 8, kernel_size=5, stride=2, padding=padw),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(ndf // 8, ndf // 16, kernel_size=3, stride=2, padding=padw),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(ndf // 16, ndf // 32, kernel_size=2, stride=2, padding=padw),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(ndf // 32, 1, kernel_size=2, stride=2),
+            nn.LeakyReLU(0.01)
+        ]
+        self.classifier = nn.Sequential(*classifier_list)
+
+        def forward(self, input):
+            h = self.block(input)
+            patch_gan = self.discrimator(h)
+
+            classifier = self.classifier(h)
+            return (patch_gan,classifier)
+
+
+
+
 
 
