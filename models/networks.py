@@ -806,3 +806,108 @@ class CssDiscriminator(nn.Module):
         classifier = self.classifier(input)
         outputs.append(classifier.view(classifier.size(0),classifier.size(1)))
         return tuple(outputs)
+    
+    
+class MutUnetGenerator(nn.Module):
+    """Create a more scale Unet-based generator"""
+
+    def __init__(self, input_nc, output_nc, num_downs, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False):
+        super(MutUnetGenerator,self).__init__()
+
+        self.module_preffix = []
+        self.module_suffix = []
+        self.conv1by1 = []
+
+        base_unet_block = UnetSkipConnectionBlock(ngf * 8,ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)
+
+        for i in range(num_downs - 5):
+            base_unet_block = UnetSkipConnectionBlock(ngf * 8,ngf * 8,input_nc=None,submodule=base_unet_block,norm_layer=norm_layer, use_dropout=use_dropout)
+
+        self.base_unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=base_unet_block,
+                                                  norm_layer=norm_layer, use_dropout=use_dropout,outermost=True)
+
+        # First layer
+        self.module_preffix1 = self.preffix_module(input_nc=input_nc,inner_nc=ngf,norm_layer=norm_layer)
+        self.module_preffix.append(self.module_preffix1)
+
+        self.module_suffix1 = self.suffix_module(inner_nc=ngf ,outer_nc=output_nc,norm_layer=norm_layer)
+        self.module_suffix.append(self.module_suffix1)
+
+        self.conv1by1_1 = self.conv1by1_module(output_nc,output_nc=output_nc)
+        self.conv1by1.append(self.conv1by1_1)
+
+        # Second layer
+        self.module_preffix2 = self.preffix_module(input_nc=ngf,inner_nc= ngf * 2,norm_layer=norm_layer)
+        self.module_preffix.append(self.module_preffix2)
+
+        self.module_suffix2 = self.suffix_module(inner_nc=ngf * 2,outer_nc= ngf,norm_layer=norm_layer)
+        self.module_suffix.append(self.module_suffix2)
+
+        self.conv1by1_2 = self.conv1by1_module(ngf,output_nc=output_nc)
+        self.conv1by1.append(self.conv1by1_2)
+
+        #Third layer
+        self.module_preffix3 = self.preffix_module(input_nc=ngf * 2,inner_nc=ngf * 4)
+        self.module_preffix.append(self.module_preffix3)
+
+        self.module_suffix3 = self.suffix_module(inner_nc=ngf * 4,outer_nc=ngf * 2,norm_layer=norm_layer)
+        self.module_suffix.append(self.module_suffix3)
+
+        self.conv1by1_3 = self.conv1by1_module(ngf * 2,output_nc=output_nc)
+        self.conv1by1.append(self.conv1by1_3)
+
+
+    def conv1by1_module(self,inner_nc,output_nc):
+        conv1by1 = nn.Conv2d(inner_nc,output_nc,kernel_size=1,stride=1,padding=0)
+        model = [conv1by1,nn.Tanh()]
+        return nn.Sequential(*model)
+
+    def suffix_module(self,inner_nc,outer_nc,norm_layer=nn.BatchNorm2d):
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+        uprelu = nn.ReLU(True)
+        upnorm = norm_layer(outer_nc)
+        upconv = nn.ConvTranspose2d(inner_nc * 2,outer_nc,kernel_size=4,stride=2,padding=1)
+
+        model = [uprelu,upconv,upnorm]
+        return nn.Sequential(*model)
+
+    def preffix_module(self,input_nc,inner_nc,norm_layer=nn.BatchNorm2d):
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        downconv = nn.Conv2d(input_nc,inner_nc,kernel_size=4,
+                             stride=2,padding=1,bias = use_bias)
+        downrelu = nn.LeakyReLU(0.2,True)
+        downnorm = norm_layer(inner_nc)
+
+        model = [downrelu,downconv,downnorm]
+        return nn.Sequential(*model)
+
+    def forward(self, x):
+        first_inner = self.module_preffix[0](x)
+
+        second_inner = self.module_preffix[1](first_inner)
+
+        third_inner = self.module_preffix[2](second_inner)
+
+        h_base = self.base_unet_block(third_inner)
+
+        third_outer = self.module_suffix[-1](torch.cat([third_inner,h_base],1))
+        third_img = self.conv1by1[-1](third_outer)
+
+        second_outer = self.module_suffix[-2](torch.cat([second_inner,third_outer],1))
+        second_img = self.conv1by1[-2](second_outer)
+
+        first_outer = self.module_suffix[-3](torch.cat([first_inner,second_outer],1))
+        first_img = self.conv1by1[-3](first_outer)
+
+        return (first_img,second_img,third_img)
+
+
+
+
