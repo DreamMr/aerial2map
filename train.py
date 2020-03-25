@@ -29,6 +29,7 @@ import cv2
 import os
 import torch
 import json
+import time
 import torchvision
 train_out = './train_out/'
 
@@ -110,7 +111,10 @@ if __name__ == '__main__':
             total_iters += opt.batch_size
             epoch_iter += opt.batch_size
             model.set_input(data)         # unpack data from dataset and apply preprocessing
+            time1 = time.time()
             model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
+            time2 = time.time()
+            print(time2-time1)
             losses = model.get_current_losses()
             loss_json = json.dumps(losses)
             print('epoch: ',epoch,'   index: ',i,'  loss: ', loss_json)

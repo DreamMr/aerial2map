@@ -154,24 +154,26 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif netG == 'mut_unet':
+        net = MutUnetGenerator(input_nc,output_nc,8,ngf,norm_layer=norm_layer,use_dropout=use_dropout)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % netG)
     return init_net(net, init_type, init_gain, gpu_ids)
 
 
-def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal', init_gain=0.02, gpu_ids=[],classifier_nc = 3):
+def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal', init_gain=0.02, gpu_ids=[],classifier_nc = 3,D_num =[]):
     """Create a discriminator
 
     Parameters:
         input_nc (int)     -- the number of channels in input images
         ndf (int)          -- the number of filters in the first conv layer
         netD (str)         -- the architecture's name: basic | n_layers | pixel
-        n_layers_D (int)   -- the number of conv layers in the discriminator; effective when netD=='n_layers'
-        norm (str)         -- the type of normalization layers used in the network.
-        init_type (str)    -- the name of the initialization method.
+        n_layers_D (int)   -- the number of conv layersnormalization layers used in the network.
+        init_type (str)    -- th in the discriminator; effective when netD=='n_layers'
+        norm (str)         -- the type of e name of the initialization method.
         init_gain (float)  -- scaling factor for normal, xavier and orthogonal.
         gpu_ids (int list) -- which GPUs the network runs on: e.g., 0,1,2
-
+        D_num (int list)
     Returns a discriminator
 
     Our current implementation provides three types of discriminators:
@@ -202,6 +204,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = MutDiscriminator(input_nc,ndf,n_layers=3,norm_layer=norm_layer)
     elif netD == 'css':
         net = CssDiscriminator(input_nc,ndf,n_layers=3,norm_layer=norm_layer,output_nc=classifier_nc)
+    elif netD == 'mut_css':
+        net = MutDiscriminatorV2(input_nc,ndf,D_num=D_num,norm_layer=norm_layer,output_nc = classifier_nc)
     else:
         raise NotImplementedError('Discriminator model name [%s] is not recognized' % netD)
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -911,13 +915,14 @@ class MutUnetGenerator(nn.Module):
 
 class MutDiscriminatorV2(nn.Module):
     """an dynatic discriminator"""
-    def __init__(self,input_nc,ndf=64,n_layers=3,norm_layer=nn.BatchNorm2d):
+    def __init__(self,input_nc,ndf=64,D_num=[],norm_layer=nn.BatchNorm2d,output_nc = 3):
         """
 
         :param input_nc: the number of channels input images
         :param ndf: the number of filters in the last conv layer
         :param n_layers: the number of conv layers in the discriminator
         :param norm_layer: normalization layer
+        :param D_num:[3,2,1]
         """
         super(MutDiscriminatorV2,self).__init__()
         if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
@@ -927,50 +932,68 @@ class MutDiscriminatorV2(nn.Module):
 
         kw = 4
         padw = 1
-        nf_mult = 1
-        nf_mult_prev = 1
-        self.n_layers = n_layers
+        self.D_num = D_num
 
-        last_nc = input_nc
 
-        for i in range(n_layers):
-            model = [
-                nn.Conv2d(last_nc,nf_mult * ndf,kernel_size=kw,stride=2,padding=padw,bias=use_bias),
-                norm_layer(nf_mult * ndf),
-                nn.LeakyReLU(0.2,True)
-            ]
-            setattr(self,str(i) + '_layers',nn.Sequential(*model))
-            discrimator = [
-                nn.Conv2d(nf_mult * ndf,kernel_size=1,stride=1,padding=0),
-                nn.Tanh()
-            ]
-            setattr(self,str(i) + '_discrimator',nn.Sequential(*discrimator))
-            last_nc = nf_mult * ndf
-            nf_mult = nf_mult << 1
+        for i in range(len(D_num)):
+            n_layer = D_num[i]
+            last_nc = input_nc
+            nf_mult = 1
+            for j in range(n_layer):
+                model = [
+                    nn.Conv2d(last_nc,nf_mult * ndf,kernel_size=kw,stride=2,padding=padw,bias=use_bias),
+                    norm_layer(nf_mult * ndf),
+                    nn.LeakyReLU(0.2,True)
+                ]
+                setattr(self,str(i)+'_scale_'+str(j) + '_layers',nn.Sequential(*model))
+                discrimator = [
+                    nn.Conv2d(nf_mult * ndf,1,kernel_size=1,stride=1,padding=0),
+                    nn.Tanh()
+                ]
+                setattr(self,str(i)+'_scale_'+str(j) + '_discrimator',nn.Sequential(*discrimator))
+                last_nc = nf_mult * ndf
+                nf_mult = nf_mult << 1
 
-        self.last_block = MutDiscriminatorsLastBlock(last_nc,norm_layer)
+            setattr(self,str(i)+'_scale_'+'last_block',MutDiscriminatorsLastBlock(last_nc,norm_layer,output_nc=output_nc))
+
+    def single_forward(self,model_layers,model_discrimator,last_block,input):
+        result = []
+        for i in range(len(model_layers)):
+            model_layer = model_layers[i]
+            discrimator = model_discrimator[i]
+
+            input = model_layer(input)
+            tmp = discrimator(input)
+            result.append(tmp)
+        last_tmp,classifier = last_block(input)
+        result.append(last_tmp)
+        return (result,classifier)
 
     def forward(self, input):
-        result = []
-        for i in range(self.n_layers):
-            model = getattr(self,str(i) + '_layers')
-            discrimator = getattr(self,str(i) + '_discrimator')
+        """
 
-            input = model(input)
-            tmp = discrimator(input)
-
-            result.append(tmp)
-
-        last_tmp,classifier = self.last_block(input)
-        result.extend([last_tmp,classifier])
-        return result
+        :param input: [256,128,64]
+        :return:
+        """
+        classifiers = []
+        results = []
+        for i in range(len(input)):
+            n_layer = self.D_num[i]
+            model_layers = [getattr(self,str(i)+'_scale_'+str(j) + '_layers') for j in range(n_layer)]
+            model_discrimator = [getattr(self,str(i)+'_scale_'+str(j) + '_discrimator') for j in range(n_layer)]
+            last_block = getattr(self,str(i)+'_scale_'+'last_block')
+            result,classifier = self.single_forward(model_layers,model_discrimator,last_block,input[i].detach())
+            results.append(result)
+            classifiers.append(classifier)
+        return (results,classifiers)
 
 
 
 
 
 class MutDiscriminatorsLastBlock(nn.Module):
-    def __init__(self,input_nc,norm_layer,ndf=512):
+    def __init__(self,input_nc,norm_layer,ndf=512,output_nc = 3):
+        super(MutDiscriminatorsLastBlock, self).__init__()
         if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
@@ -998,17 +1021,17 @@ class MutDiscriminatorsLastBlock(nn.Module):
             nn.LeakyReLU(0.01),
             nn.Conv2d(ndf // 16, ndf // 32, kernel_size=2, stride=2, padding=padw),
             nn.LeakyReLU(0.01),
-            nn.Conv2d(ndf // 32, 1, kernel_size=2, stride=2),
+            nn.Conv2d(ndf // 32, output_nc, kernel_size=2, stride=2),
             nn.LeakyReLU(0.01)
         ]
         self.classifier = nn.Sequential(*classifier_list)
 
-        def forward(self, input):
-            h = self.block(input)
-            patch_gan = self.discrimator(h)
+    def forward(self, input):
+        h = self.block(input)
+        patch_gan = self.discrimator(h)
 
-            classifier = self.classifier(h)
-            return (patch_gan,classifier)
+        classifier = self.classifier(h)
+        return (patch_gan,classifier.view(classifier.size(0),classifier.size(1)))
 
 
 

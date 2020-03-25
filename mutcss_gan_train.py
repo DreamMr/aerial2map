@@ -60,10 +60,12 @@ if __name__ == '__main__':
     #writer.add_graph(netG,(sample_input_G,))
     #writer.add_graph(netD,(sample_input_D,))
 
-    total_iters = 0
+    total_iters = opt.epoch_count * opt.batch_size
     if opt.debug:
         print("size: ",sz)
     for epoch in range(opt.epoch_count,opt.niter + opt.niter_decay + 1):
+        epoch_iter = 0
+        each_iter = 0
         for i in range(sz):
             dataset_keys = list(dataset_dic.keys())
             random.shuffle(dataset_keys)
@@ -72,15 +74,13 @@ if __name__ == '__main__':
             for dataset_name in dataset_keys:
                 dataset = None
                 tag = None
-
                 dataset = dataset_list[dataset_name]
                 a_tag = dataset_tag_list[dataset_name]
                 t = np.expand_dims(a_tag,axis=0).repeat(opt.batch_size,axis=0)
                 tag = torch.from_numpy(t).float()
 
-                total_iters += opt.batch_size
+
                 data = next(iter(dataset))
-                #print(len(data['A']))
                 data['tag'] = tag
 
                 model.set_input(data)
@@ -88,28 +88,38 @@ if __name__ == '__main__':
                 losses = model.get_current_losses()
                 loss_json = json.dumps(losses)
 
-                if i == sz - 1:
-                    writer.add_text(dataset_name+'/','epoch: ' + str(epoch) + ' loss: ' + loss_json,epoch)
-                    print('epoch : ',epoch,' loss: ',loss_json)
+                if total_iters % opt.print_freq:
+                    writer.add_text(dataset_name+'/','epoch: ' + str(epoch) +' epoch_iter:'+ str(epoch_iter)+ ' each_iter:'+str(each_iter) +' loss: ' + loss_json,epoch)
+                    print('epoch : ',epoch,' iter:',epoch_iter,' each_iter: ',each_iter,' loss: ',loss_json)
 
+                if total_iters % opt.display_freq:
                     visuals = model.get_current_visuals()
                     real_A = util.tensor2im(visuals['real_A'])
-                    fake_B = util.tensor2im(visuals['fake_B'])
+                    fake_B = util.tensor2im(visuals['fake_B_high'])
                     real_B = util.tensor2im(visuals['real_B'])
 
                     output = np.concatenate((real_A,fake_B,real_B),axis=1)
                     b,g,r = cv2.split(output)
                     result = cv2.merge([r,g,b])
                     result = torch.from_numpy(result)
-                    writer.add_image(dataset_name+'/result',result,epoch,dataformats='HWC')
+                    writer.add_image(dataset_name+'/result',result,total_iters,dataformats='HWC')
 
-                    writer.add_scalar(dataset_name+'/G_GAN',losses['G_GAN'],epoch)
-                    writer.add_scalar(dataset_name+'/G_classifier',losses['G_classifier'],epoch)
-                    writer.add_scalar(dataset_name + '/G_total',losses['G_total'],epoch)
-                    writer.add_scalar(dataset_name + '/D_real',losses['D_real'],epoch)
-                    writer.add_scalar(dataset_name + '/D_fake',losses['D_fake'],epoch)
-                    writer.add_scalar(dataset_name + '/D_classifier_real',losses['D_classifier_real'],epoch)
-                    writer.add_scalar(dataset_name + '/D_total',losses['D_total'],epoch)
+                    fake_feature = {'high':util.tensor2im(visuals['fake_B_high']),'middle':util.tensor2im(visuals['fake_B_middle']),'low':util.tensor2im(visuals['fake_B_low'])}
+                    keys = ['high','middle','low']
+                    for key in keys:
+                        writer.add_image(dataset_name+'/feature/'+key,fake_feature[key],total_iters,dataformats='HWC')
+
+                    writer.add_scalar(dataset_name+'/G_GAN',losses['G_GAN'],total_iters)
+                    writer.add_scalar(dataset_name+'/G_classifier',losses['G_classifier'],total_iters)
+                    writer.add_scalar(dataset_name + '/G_total',losses['G_total'],total_iters)
+                    writer.add_scalar(dataset_name + '/D_real',losses['D_real'],total_iters)
+                    writer.add_scalar(dataset_name + '/D_fake',losses['D_fake'],total_iters)
+                    writer.add_scalar(dataset_name + '/D_classifier_real',losses['D_classifier_real'],total_iters)
+                    writer.add_scalar(dataset_name + '/D_total',losses['D_total'],total_iters)
+
+                epoch_iter += opt.batch_size
+                total_iters += opt.batch_size
+            each_iter += opt.batch_size
 
         if epoch % opt.save_epoch_freq == 0:
             model.save_networks('latest')

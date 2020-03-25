@@ -16,7 +16,7 @@ from data.base_dataset import BaseDataset, get_params,get_transform
 from PIL import Image
 import os
 import random
-
+import time
 
 class CssDataset(BaseDataset):
     """A  dataset class can load CssGan DataSet."""
@@ -57,13 +57,19 @@ class CssDataset(BaseDataset):
         Step 3: convert your data to a PyTorch tensor. You can use helpder functions such as self.transform. e.g., data = self.transform(image)
         Step 4: return a data point as a dictionary.
         """
+        #time0 = time.time()
+
         index = index % self.A_size
         A_path = self.A_paths[index]
         dir_name,file_name = os.path.split(A_path)
         B_path = os.path.join(self.dir_B,file_name)
 
+        #time2 = time.time()
+
         A_img = Image.open(A_path).convert('RGB')
         B_img = Image.open(B_path).convert('RGB')
+
+        #time3 = time.time()
 
         transform_params = get_params(self.opt,A_img.size)
         A_transform = get_transform(self.opt,transform_params,grayscale=(self.input_nc == 1))
@@ -71,6 +77,11 @@ class CssDataset(BaseDataset):
 
         A = A_transform(A_img)
         B = B_transform(B_img)
+
+        #time4 = time.time()
+
+        #time1 = time.time()
+        #print('total time: ',time1-time0,'; path: ',time2-time0,';open: ',time3-time2,';transform:',time4-time3)
 
         return {'A':A,'B':B,'A_paths':A_path,'B_paths':B_path}
 
